@@ -1,3 +1,3 @@
-module github.com/solosmartpay/solosmartpay-go
+module github.com/solosmartdigital/solosmartpay/go
 
 go 1.21

@@ -3,8 +3,14 @@
 Go ≥ 1.21, standard library only. Server-side use only.
 
 ```bash
-go get github.com/solosmartpay/solosmartpay-go
+go get github.com/solosmartdigital/solosmartpay/go
 ```
+
+```go
+import solosmartpay "github.com/solosmartdigital/solosmartpay/go"
+```
+
+The module lives in the `go/` folder of the SDK repo, so versions are tagged `go/v1.2.0`, `go/v1.2.1`, and so on.
 
 ## Create, wait, show
 
