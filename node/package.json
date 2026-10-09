@@ -1,0 +1,44 @@
+{
+  "name": "@solosmartpay/node",
+  "version": "1.1.0",
+  "description": "Official JavaScript client for the Solosmartpay payment API (QRIS, bank VA, e-wallet): server SDK, webhook verification, and a browser helper for the popup checkout. Works with Laravel + Vite.",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./browser": {
+      "types": "./browser.d.ts",
+      "default": "./browser.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "browser.js",
+    "browser.d.ts",
+    "examples",
+    "README.md"
+  ],
+  "license": "MIT",
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "solosmartpay",
+    "qris",
+    "payment",
+    "virtual-account",
+    "laravel",
+    "vite",
+    "webhook"
+  ]
+}
