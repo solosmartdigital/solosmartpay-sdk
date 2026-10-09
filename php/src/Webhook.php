@@ -2,6 +2,8 @@
 
 namespace Solosmartpay;
 
+use Solosmartpay\Models\WebhookEvent;
+
 /**
  * Verifies a webhook from Solosmartpay and returns the decoded event.
  *
@@ -13,10 +15,19 @@ namespace Solosmartpay;
  *   );
  *   if ($event['type'] === 'payment.paid') { ... mark order $event['data']['reference'] paid ... }
  *
+ * Webhook::parse() takes the same arguments and returns a Models\WebhookEvent
+ * ($event->isPaid(), $event->data->reference, ...).
+ *
  * Deduplicate on $event['id'] — deliveries are at-least-once.
  */
 final class Webhook
 {
+    /** Same checks as verify(), returned as a typed event. */
+    public static function parse(string $rawBody, string $signature, string $timestamp, string $secret, int $toleranceSeconds = 300): WebhookEvent
+    {
+        return WebhookEvent::fromArray(self::verify($rawBody, $signature, $timestamp, $secret, $toleranceSeconds));
+    }
+
     public static function verify(string $rawBody, string $signature, string $timestamp, string $secret, int $toleranceSeconds = 300): array
     {
         if ($secret === '') {

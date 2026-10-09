@@ -20,38 +20,39 @@ class SolosmartpayController extends Controller
         return new Client(config('services.solosmartpay.token'), config('services.solosmartpay.base_url'));
     }
 
-    /** POST /orders/{order}/pay — create (or re-use) the invoice. The token never leaves the server. */
+    /** POST /orders/{order}/pay: create the invoice. The token never leaves the server. */
     public function create(Order $order): JsonResponse
     {
         try {
             // Same Idempotency-Key + same body = same invoice, so a double click is safe.
-            $created = $this->client()->createQris($order->total, "order-{$order->id}-create", "ORDER-{$order->id}");
+            // For virtual account / e-wallet use: $this->client()->payments->create($order->total, 'BR', ...) or method 'all'.
+            $qris = $this->client()->qris->create($order->total, "order-{$order->id}-create", "ORDER-{$order->id}");
         } catch (SolosmartpayException $e) {
             return response()->json(['message' => $e->getMessage()], $e->status ?: 502);
         }
 
-        $order->update(['solosmartpay_id' => $created['data']['id']]);
+        $order->update(['solosmartpay_id' => $qris->id]);
 
-        return response()->json(['id' => $created['data']['id']], 202);
+        return response()->json(['id' => $qris->id], 202);
     }
 
-    /** GET /orders/{order}/pay/status — the browser polls this until embed_url is ready. */
+    /** GET /orders/{order}/pay/status: the browser polls this until embed_url is ready. */
     public function status(Order $order): JsonResponse
     {
-        $invoice = $this->client()->getQris($order->solosmartpay_id);
+        $qris = $this->client()->qris->get($order->solosmartpay_id);
 
         return response()->json([
-            'status' => $invoice['status'],
-            'provisioning_status' => $invoice['provisioning_status'],
-            'embed_url' => $invoice['embed_url'],
+            'status' => $qris->status,
+            'provisioning_status' => $qris->provisioningStatus,
+            'embed_url' => $qris->embedUrl,
         ]);
     }
 
-    /** POST /webhooks/solosmartpay — the only trustworthy proof of payment. Exclude it from CSRF. */
+    /** POST /webhooks/solosmartpay: the only trustworthy proof of payment. Exclude it from CSRF. */
     public function webhook(Request $request)
     {
         try {
-            $event = Webhook::verify(
+            $event = Webhook::parse(
                 $request->getContent(),
                 (string) $request->header('X-SoloSmartPay-Signature'),
                 (string) $request->header('X-SoloSmartPay-Timestamp'),
@@ -62,10 +63,10 @@ class SolosmartpayController extends Controller
         }
 
         // Deliveries are at-least-once: handle each event id once.
-        if ($event['type'] === 'payment.paid' && Cache::add("ssp:event:{$event['id']}", 1, now()->addDay())) {
-            $order = Order::where('solosmartpay_id', $event['data']['id'])->first();
+        if ($event->isPaid() && Cache::add("ssp:event:{$event->id}", 1, now()->addDay())) {
+            $order = Order::where('solosmartpay_id', $event->data->id)->first();
 
-            if ($order && $order->total === $event['data']['amount']) {
+            if ($order && $order->total === $event->data->amount) {
                 $order->markPaid();
             }
         }

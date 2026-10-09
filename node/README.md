@@ -15,9 +15,9 @@ npm install @solosmartpay/node
 
 ## Pay flow in 3 steps
 
-1. **Server** creates the invoice (`createQris` or `createPayment`).
-2. **Browser** opens the popup with `openCheckout(embed_url)`.
-3. **Server** marks the order paid from the `payment.paid` webhook (`verifyWebhook`).
+1. **Server** creates the invoice (`ssp.qris.create` or `ssp.payments.create`).
+2. **Browser** opens the popup with `openCheckout(embedUrl)`.
+3. **Server** marks the order paid from the `payment.paid` webhook (`parseWebhook`).
 
 ### 1. Server
 
@@ -26,20 +26,46 @@ import { Solosmartpay } from '@solosmartpay/node';
 
 const ssp = new Solosmartpay({ token: process.env.SOLOSMARTPAY_TOKEN, baseUrl: 'https://YOUR-DOMAIN/v1' });
 
-const { data, status_url } = await ssp.createQris({ amount: 50000, reference: 'ORDER-123', idempotencyKey: 'order-123-create' });
-const invoice = await ssp.getQris(data.id); // repeat until invoice.embed_url is not null
+let qris = await ssp.qris.create({ amount: 50000, reference: 'ORDER-123', idempotencyKey: 'order-123-create' });
+qris = await ssp.qris.waitUntilReady(qris);   // polls until the checkout is available
+
+qris.totalAmount;   // 50127 (amount + unique code)
+qris.embedUrl;      // give this to the browser
+qris.qrisImage;     // PNG data URI for a custom UI
+qris.expiresAt;     // Date
 ```
 
-Creation is asynchronous: the response is `202`, and `embed_url` stays `null` until `provisioning_status` is `ready`. Poll `getQris` (or `status_url`) about once per second.
+Creation is asynchronous (`202`). `waitUntilReady` rejects if provisioning fails or `timeoutMs` (default 30000) passes.
 
-Other calls: `createPayment({ amount, method, ... })`, `getPayment`, `paymentMethods()`, `cancelQris(id)`, `cancelPayment(id)`.
+Virtual account, e-wallet, and retail use the same flow:
+
+```js
+const method = await ssp.methods.find('BR');          // PaymentMethod | null
+method?.accepts(150000);                              // inside the method's limits?
+
+let bill = await ssp.payments.create({ amount: 150000, method: 'BR', reference: 'ORDER-124', idempotencyKey: 'order-124-create' }); // or 'all'
+bill = await ssp.payments.waitUntilReady(bill);
+
+await ssp.methods.all('ewallet');                     // list one group
+await ssp.qris.cancel(qris.id);                       // while still pending
+```
+
+| Class | What it is |
+|---|---|
+| `Invoice` | `id`, `reference`, `status`, `provisioningStatus`, `amount`, `uniqueCode`, `totalAmount`, `fee`, `netAmount`, `expiresAt`, `paidAt`, `checkoutUrl`, `embedUrl`, `statusUrl`, and `isPending()`, `isPaid()`, `isExpired()`, `isCancelled()`, `isReady()` |
+| `Qris` | adds `qrisString`, `qrisImage` |
+| `Payment` | adds `paymentUrl` (null for virtual accounts) |
+| `PaymentMethod` | `code`, `name`, `group`, `feeType`, `fee`, `minAmount`, `maxAmount`, `accepts()` |
+| `WebhookEvent` | `id`, `type`, `data` (an `Invoice`), `isPaid()` |
+
+Every model keeps the untouched API payload in `.raw`. The 1.0/1.1 flat helpers (`createQris`, `getQris`, `cancelQris`, `createPayment`, `getPayment`, `cancelPayment`, `paymentMethods`) still return raw snake_case data.
 
 ### 2. Browser
 
 ```js
 import { openCheckout } from '@solosmartpay/node/browser';
 
-await openCheckout(invoice.embed_url, {
+await openCheckout(qris.embedUrl, {
   lang: 'id',
   onSuccess: (r) => (location.href = `/thanks?id=${r.publicId}`), // UX only
   onClose: ({ reason }) => console.log('closed', reason),
@@ -51,12 +77,12 @@ await openCheckout(invoice.embed_url, {
 ### 3. Webhook (Express)
 
 ```js
-import { verifyWebhook } from '@solosmartpay/node';
+import { parseWebhook } from '@solosmartpay/node';
 
 app.post('/webhook/solosmartpay', express.raw({ type: 'application/json' }), (req, res) => {
   try {
-    const event = verifyWebhook(req.body, req.get('X-SoloSmartPay-Signature'), req.get('X-SoloSmartPay-Timestamp'), process.env.SOLOSMARTPAY_WEBHOOK_SECRET);
-    if (event.type === 'payment.paid') {
+    const event = parseWebhook(req.body, req.get('X-SoloSmartPay-Signature'), req.get('X-SoloSmartPay-Timestamp'), process.env.SOLOSMARTPAY_WEBHOOK_SECRET);
+    if (event.isPaid()) {
       // match event.data.reference and event.data.amount to your order; dedupe on event.id
     }
     res.sendStatus(200);

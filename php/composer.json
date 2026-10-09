@@ -9,6 +9,11 @@
         "ext-json": "*"
     },
     "autoload": {
-        "psr-4": { "Solosmartpay\\": "src/" }
+        "psr-4": {
+            "Solosmartpay\\": "src/"
+        }
+    },
+    "scripts": {
+        "test": "php tests/run.php"
     }
 }

@@ -6,9 +6,6 @@ package solosmartpay
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,12 +13,11 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
 
-const Version = "1.0.0"
+const Version = "1.2.0"
 
 // Error is returned for any non-2xx response or transport failure.
 type Error struct {
@@ -37,50 +33,25 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("solosmartpay: %d %s", e.Status, e.Message)
 }
 
-// Invoice is the common shape of QRIS and bank/e-wallet bills.
-type Invoice struct {
-	ID                 string  `json:"id"`
-	Reference          *string `json:"reference"`
-	Status             string  `json:"status"` // pending | paid | expired | failed
-	Amount             int64   `json:"amount"`
-	UniqueCode         *int    `json:"unique_code"`
-	TotalAmount        int64   `json:"total_amount"`
-	Fee                int64   `json:"fee"`
-	NetAmount          int64   `json:"net_amount"`
-	ExpiresAt          *string `json:"expires_at"`
-	PaidAt             *string `json:"paid_at"`
-	CreatedAt          *string `json:"created_at"`
-	CheckoutURL        string  `json:"checkout_url"`
-	ProvisioningStatus string  `json:"provisioning_status"`
-	// QRIS only (while pending).
-	QrisString *string `json:"qris_string,omitempty"`
-	QrisImage  *string `json:"qris_image,omitempty"`
-	// Bank VA / e-wallet only.
-	Method     *string `json:"method,omitempty"`
-	PaymentURL *string `json:"payment_url,omitempty"`
-}
-
-type PaymentMethod struct {
-	Code      string  `json:"code"`
-	Name      string  `json:"name"`
-	Group     string  `json:"group"`
-	FeeType   string  `json:"fee_type"`
-	Fee       float64 `json:"fee"`
-	MinAmount int64   `json:"min_amount"`
-	MaxAmount *int64  `json:"max_amount"`
-}
-
-// CreateResult is returned by create calls. StatusURL is present only when provisioning is queued.
-type CreateResult struct {
-	Data      Invoice `json:"data"`
-	StatusURL string  `json:"status_url,omitempty"`
-}
-
+// Client talks to the Solosmartpay API. Create one with New.
+//
+//	ssp, _ := solosmartpay.New(os.Getenv("SOLOSMARTPAY_TOKEN"), "https://your-domain/v1")
+//	qris, _ := ssp.Qris.Create(ctx, solosmartpay.QrisParams{Amount: 50000, Reference: "ORDER-123", IdempotencyKey: "order-123-create"})
+//	qris, _ = ssp.Qris.WaitUntilReady(ctx, qris.ID, nil) // EmbedURL / QrisImage filled
+//
+// Money is integer Rupiah. The flat helpers (CreateQris, GetQris, ...) remain available.
 type Client struct {
 	token      string
 	baseURL    string
 	httpClient *http.Client
 	maxRetries int
+
+	// Qris manages QRIS invoices.
+	Qris *QrisService
+	// Payments manages bank virtual account, e-wallet and retail invoices.
+	Payments *PaymentsService
+	// Methods lists the payment methods enabled for your store.
+	Methods *MethodsService
 }
 
 type Option func(*Client)
@@ -100,32 +71,26 @@ func New(token, baseURL string, opts ...Option) (*Client, error) {
 	for _, o := range opts {
 		o(c)
 	}
+	c.Qris = &QrisService{c}
+	c.Payments = &PaymentsService{c}
+	c.Methods = &MethodsService{c}
 	return c, nil
 }
 
-// CreateQris creates a QRIS quote. idempotencyKey is required.
+// CreateQris creates a QRIS invoice and returns the raw envelope. idempotencyKey is required.
 func (c *Client) CreateQris(ctx context.Context, amount int64, reference, idempotencyKey string) (*CreateResult, error) {
-	body := map[string]any{"amount": amount}
-	if reference != "" {
-		body["reference"] = reference
-	}
-	var out CreateResult
-	return &out, c.do(ctx, http.MethodPost, "/qris", body, idempotencyKey, &out)
-}
-
-// ProvisionQris queues a payable QRIS invoice from a quote. idempotencyKey must be new.
-func (c *Client) ProvisionQris(ctx context.Context, amount int64, quoteID, idempotencyKey, redirectURL string) (*CreateResult, error) {
-	body := map[string]any{"amount": amount, "quote_id": quoteID}
-	if redirectURL != "" {
-		body["redirect_url"] = redirectURL
-	}
-	var out CreateResult
-	return &out, c.do(ctx, http.MethodPost, "/qris", body, idempotencyKey, &out)
+	return c.create(ctx, "/qris", map[string]any{"amount": amount}, reference, "", idempotencyKey)
 }
 
 func (c *Client) GetQris(ctx context.Context, id string) (*Invoice, error) {
 	var out Invoice
 	return &out, c.do(ctx, http.MethodGet, "/qris/"+url.PathEscape(id), nil, "", &out)
+}
+
+// CancelQris cancels a pending QRIS invoice (idempotent; 409 once paid or expired).
+func (c *Client) CancelQris(ctx context.Context, id string) (*Invoice, error) {
+	var out Invoice
+	return &out, c.do(ctx, http.MethodDelete, "/qris/"+url.PathEscape(id), nil, "", &out)
 }
 
 // PaymentMethods lists the bank VA / e-wallet methods enabled for your store.
@@ -136,12 +101,7 @@ func (c *Client) PaymentMethods(ctx context.Context) ([]PaymentMethod, error) {
 
 // CreatePayment queues a bank VA / e-wallet bill. idempotencyKey is required.
 func (c *Client) CreatePayment(ctx context.Context, amount int64, method, reference, idempotencyKey string) (*CreateResult, error) {
-	body := map[string]any{"amount": amount, "method": method}
-	if reference != "" {
-		body["reference"] = reference
-	}
-	var out CreateResult
-	return &out, c.do(ctx, http.MethodPost, "/payments", body, idempotencyKey, &out)
+	return c.create(ctx, "/payments", map[string]any{"amount": amount, "method": method}, reference, "", idempotencyKey)
 }
 
 func (c *Client) GetPayment(ctx context.Context, id string) (*Invoice, error) {
@@ -149,9 +109,33 @@ func (c *Client) GetPayment(ctx context.Context, id string) (*Invoice, error) {
 	return &out, c.do(ctx, http.MethodGet, "/payments/"+url.PathEscape(id), nil, "", &out)
 }
 
+// CancelPayment cancels a pending bank VA / e-wallet bill (idempotent; 409 once paid or expired).
+func (c *Client) CancelPayment(ctx context.Context, id string) (*Invoice, error) {
+	var out Invoice
+	return &out, c.do(ctx, http.MethodDelete, "/payments/"+url.PathEscape(id), nil, "", &out)
+}
+
+func (c *Client) create(ctx context.Context, path string, body map[string]any, reference, redirectURL, idempotencyKey string) (*CreateResult, error) {
+	if idempotencyKey == "" {
+		return nil, errors.New("solosmartpay: idempotencyKey wajib diisi")
+	}
+	if reference != "" {
+		body["reference"] = reference
+	}
+	if redirectURL != "" {
+		body["redirect_url"] = redirectURL
+	}
+	var out CreateResult
+	if err := c.do(ctx, http.MethodPost, path, body, idempotencyKey, &out); err != nil {
+		return nil, err
+	}
+	out.Data.StatusURL = out.StatusURL
+	return &out, nil
+}
+
 // do retries network errors, 429 and 5xx when the call is safe to repeat.
 func (c *Client) do(ctx context.Context, method, path string, body any, idempotencyKey string, out any) error {
-	retryable := method == http.MethodGet || idempotencyKey != ""
+	retryable := method == http.MethodGet || method == http.MethodDelete || idempotencyKey != ""
 	var payload []byte
 	if body != nil {
 		var err error
@@ -212,38 +196,4 @@ func (c *Client) do(ctx context.Context, method, path string, body any, idempote
 
 func backoff(attempt int) time.Duration {
 	return time.Duration(250*math.Pow(2, float64(attempt-1))) * time.Millisecond
-}
-
-// WebhookEvent is the body Solosmartpay POSTs to your webhook URL.
-type WebhookEvent struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type"` // payment.paid | invoice.expired | webhook.test
-	CreatedAt string          `json:"created_at"`
-	Data      json.RawMessage `json:"data"`
-}
-
-// VerifyWebhook checks the X-SoloSmartPay-Signature / -Timestamp headers against
-// the raw body and returns the event. Deliveries are at-least-once: dedupe on ID.
-func VerifyWebhook(rawBody []byte, signature, timestamp, secret string, tolerance time.Duration) (*WebhookEvent, error) {
-	if secret == "" {
-		return nil, &Error{Message: "webhook secret kosong"}
-	}
-	if tolerance <= 0 {
-		tolerance = 5 * time.Minute
-	}
-	ts, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil || time.Since(time.Unix(ts, 0)).Abs() > tolerance {
-		return nil, &Error{Message: "timestamp webhook tidak valid atau kedaluwarsa (kemungkinan replay)"}
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(timestamp + "." + string(rawBody)))
-	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(expected), []byte(signature)) {
-		return nil, &Error{Message: "signature webhook tidak valid"}
-	}
-	var ev WebhookEvent
-	if err := json.Unmarshal(rawBody, &ev); err != nil || ev.ID == "" || ev.Type == "" {
-		return nil, &Error{Message: "body webhook tidak valid"}
-	}
-	return &ev, nil
 }
