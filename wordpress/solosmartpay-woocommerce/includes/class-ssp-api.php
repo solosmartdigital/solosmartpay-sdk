@@ -29,6 +29,36 @@ class SSP_WC_Api
         return $url;
     }
 
+    /** HTTPS only (the token travels in a header); plain HTTP is accepted for loopback development. */
+    public static function is_secure_url($url)
+    {
+        $parts = wp_parse_url((string) $url);
+        if (empty($parts['scheme']) || empty($parts['host'])) {
+            return false;
+        }
+        if (strtolower($parts['scheme']) === 'https') {
+            return true;
+        }
+
+        return strtolower($parts['scheme']) === 'http' && in_array(strtolower($parts['host']), array('localhost', '127.0.0.1', '[::1]', '::1'), true);
+    }
+
+    public function is_usable()
+    {
+        return $this->token !== '' && self::is_secure_url($this->base_url);
+    }
+
+    /** A checkout URL we send the customer to must live on the same host as the API. */
+    public function owns_url($url)
+    {
+        $a = wp_parse_url($this->base_url);
+        $b = wp_parse_url((string) $url);
+
+        return ! empty($a['host']) && ! empty($b['host'])
+            && strtolower($a['host']) === strtolower($b['host'])
+            && in_array(strtolower(isset($b['scheme']) ? $b['scheme'] : ''), array('http', 'https'), true);
+    }
+
     /**
      * POST /v1/payments. `method` "all" lets the customer pick on the Solosmartpay checkout page.
      *
@@ -70,13 +100,18 @@ class SSP_WC_Api
             'X-API-Token' => $this->token,
             'User-Agent' => 'solosmartpay-woocommerce/' . SSP_WC_VERSION,
         );
-        $args = array('method' => $method, 'timeout' => 20, 'headers' => $headers);
+        // No redirects: the token header must never follow a redirect to another host.
+        $args = array('method' => $method, 'timeout' => 20, 'redirection' => 0, 'sslverify' => true, 'headers' => $headers);
         if ($body !== null) {
             $args['headers']['Content-Type'] = 'application/json';
             $args['body'] = wp_json_encode($body);
         }
         if ($idempotency_key) {
             $args['headers']['Idempotency-Key'] = $idempotency_key;
+        }
+
+        if (! $this->is_usable()) {
+            return new WP_Error('ssp_not_configured', 'Solosmartpay belum dikonfigurasi dengan benar (token kosong atau base URL bukan HTTPS).');
         }
 
         $response = wp_remote_request($this->base_url . $path, $args);

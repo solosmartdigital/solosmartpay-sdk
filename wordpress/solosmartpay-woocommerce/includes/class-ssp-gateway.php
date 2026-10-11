@@ -75,12 +75,12 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
             ),
             'api_token' => array(
                 'title' => __('API Token', 'solosmartpay-woocommerce'),
-                'type' => 'password',
+                'type' => 'ssp_secret',
                 'description' => __('Token ssp_… dengan scope payments:write dan read. Isi whitelist IP server ini pada token.', 'solosmartpay-woocommerce'),
             ),
             'webhook_secret' => array(
                 'title' => __('Webhook Secret', 'solosmartpay-woocommerce'),
-                'type' => 'password',
+                'type' => 'ssp_secret',
                 'description' => __('Dipakai untuk memverifikasi tanda tangan webhook.', 'solosmartpay-woocommerce'),
             ),
             'webhook_section' => array(
@@ -99,6 +99,51 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
                 'default' => 'no',
             ),
         );
+    }
+
+    /** Secret inputs are never pre-filled with the stored value (it would sit in the page source). */
+    public function generate_ssp_secret_html($key, $data)
+    {
+        $field_key = $this->get_field_key($key);
+        $data = wp_parse_args($data, array('title' => '', 'placeholder' => '', 'description' => '', 'desc_tip' => false, 'custom_attributes' => array()));
+        $is_set = $this->get_option($key) !== '';
+
+        ob_start();
+        ?>
+        <tr valign="top">
+            <th scope="row" class="titledesc"><label for="<?php echo esc_attr($field_key); ?>"><?php echo wp_kses_post($data['title']); ?></label></th>
+            <td class="forminp">
+                <fieldset>
+                    <legend class="screen-reader-text"><span><?php echo wp_kses_post($data['title']); ?></span></legend>
+                    <input class="input-text regular-input" type="password" name="<?php echo esc_attr($field_key); ?>" id="<?php echo esc_attr($field_key); ?>" value="" autocomplete="new-password"
+                        placeholder="<?php echo esc_attr($is_set ? __('•••••••• tersimpan (kosongkan jika tidak diubah)', 'solosmartpay-woocommerce') : ''); ?>" />
+                    <?php echo wp_kses_post($this->get_description_html($data)); ?>
+                </fieldset>
+            </td>
+        </tr>
+        <?php
+
+        return ob_get_clean();
+    }
+
+    /** Blank keeps the stored secret; otherwise only token-safe characters are kept. */
+    public function validate_ssp_secret_field($key, $value)
+    {
+        $value = is_null($value) ? '' : preg_replace('/\s+/', '', stripslashes((string) $value));
+
+        return $value === '' ? (string) $this->get_option($key) : $value;
+    }
+
+    public function validate_base_url_field($key, $value)
+    {
+        $url = SSP_WC_Api::normalize_base_url(esc_url_raw(trim(stripslashes((string) $value))));
+        if (! SSP_WC_Api::is_secure_url($url)) {
+            WC_Admin_Settings::add_error(__('Base URL API harus memakai HTTPS. Nilai sebelumnya dipertahankan.', 'solosmartpay-woocommerce'));
+
+            return $this->get_option($key, self::DEFAULT_BASE_URL);
+        }
+
+        return $url;
     }
 
     public function webhook_url()
@@ -122,6 +167,12 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
         return new SSP_WC_Api($this->get_option('base_url', self::DEFAULT_BASE_URL), $this->get_option('api_token'));
     }
 
+    /** Text from the API is only ever shown as plain text. */
+    private function plain($text)
+    {
+        return wp_strip_all_tags((string) $text);
+    }
+
     private function log($message, $level = 'info')
     {
         if ($this->get_option('debug') !== 'yes' && $level !== 'error') {
@@ -139,7 +190,15 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
             return array('result' => 'failure');
         }
 
-        $amount = (int) round((float) $order->get_total());
+        $total = (float) $order->get_total();
+        $amount = (int) round($total);
+        if (abs($total - $amount) > 0.001) {
+            // Rounding would charge a different amount than the order total.
+            $this->log('order ' . $order->get_id() . ' total is not a whole rupiah: ' . $total, 'error');
+            wc_add_notice(__('Total pesanan harus bilangan bulat Rupiah. Hubungi pemilik toko.', 'solosmartpay-woocommerce'), 'error');
+
+            return array('result' => 'failure');
+        }
         if ($order->get_currency() !== 'IDR' || $amount < 1 || $amount > self::MAX_AMOUNT) {
             wc_add_notice(__('Total pesanan di luar batas Solosmartpay (Rp1 sampai Rp50.000.000, mata uang IDR).', 'solosmartpay-woocommerce'), 'error');
 
@@ -147,6 +206,12 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
         }
 
         $api = $this->api();
+        if (! $api->is_usable()) {
+            $this->log('gateway not usable: token empty or base URL not HTTPS', 'error');
+            wc_add_notice(__('Pembayaran tidak tersedia saat ini. Silakan pilih metode lain.', 'solosmartpay-woocommerce'), 'error');
+
+            return array('result' => 'failure');
+        }
 
         // Retry of an order that already has an invoice: reuse it when still payable.
         $existing_id = (string) $order->get_meta('_ssp_invoice_id');
@@ -159,7 +224,7 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
                     return array('result' => 'success', 'redirect' => $this->get_return_url($order));
                 }
                 if (($existing['status'] ?? '') === 'pending') {
-                    if ((int) ($existing['amount'] ?? 0) === $amount && ! empty($existing['checkout_url'])) {
+                    if ((int) ($existing['amount'] ?? 0) === $amount && ! empty($existing['checkout_url']) && $api->owns_url($existing['checkout_url'])) {
                         return $this->go_to_checkout($order, $existing['checkout_url']);
                     }
                     $api->cancel_payment($existing_id);
@@ -176,7 +241,7 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
         if (is_wp_error($invoice)) {
             $this->log('create_payment failed for order ' . $order->get_id() . ': ' . $invoice->get_error_message(), 'error');
             wc_add_notice(__('Pembayaran tidak bisa dibuat saat ini. Silakan coba lagi atau pilih metode lain.', 'solosmartpay-woocommerce'), 'error');
-            $order->add_order_note('Solosmartpay: gagal membuat tagihan: ' . $invoice->get_error_message());
+            $order->add_order_note('Solosmartpay: gagal membuat tagihan: ' . $this->plain($invoice->get_error_message()));
 
             return array('result' => 'failure');
         }
@@ -189,6 +254,10 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
                 break;
             }
             $invoice = $fresh;
+        }
+        if (! empty($invoice['checkout_url']) && ! $api->owns_url($invoice['checkout_url'])) {
+            $this->log('checkout_url host does not match the API host, refusing to redirect', 'error');
+            $invoice['checkout_url'] = '';
         }
         if (empty($invoice['checkout_url']) || empty($invoice['id'])) {
             $this->log('no checkout_url for order ' . $order->get_id(), 'error');
@@ -264,6 +333,9 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
         }
 
         $raw = (string) file_get_contents('php://input');
+        if (strlen($raw) > 1048576) {
+            $this->respond(413, 'payload too large');
+        }
         $signature = isset($_SERVER['HTTP_X_SOLOSMARTPAY_SIGNATURE']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_X_SOLOSMARTPAY_SIGNATURE'])) : '';
         $timestamp = isset($_SERVER['HTTP_X_SOLOSMARTPAY_TIMESTAMP']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_X_SOLOSMARTPAY_TIMESTAMP'])) : '';
 
@@ -274,7 +346,7 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
         }
 
         $event = json_decode($raw, true);
-        if (! is_array($event) || empty($event['id']) || empty($event['type'])) {
+        if (! is_array($event) || empty($event['id']) || empty($event['type']) || ! is_string($event['id']) || ! is_string($event['type'])) {
             $this->respond(400, 'invalid body');
         }
 
@@ -283,30 +355,64 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
             $this->respond(200, 'duplicate');
         }
 
+        // Concurrent deliveries of the same event must not be applied twice.
+        $lock = $this->acquire_lock((string) $event['id']);
+        if ($lock === null) {
+            $this->respond(409, 'event is being processed');
+        }
+
         $data = isset($event['data']) && is_array($event['data']) ? $event['data'] : array();
         $type = (string) $event['type'];
 
+        $message = 'ok';
         if ($type === 'webhook.test') {
-            set_transient($seen_key, 1, DAY_IN_SECONDS);
-            $this->respond(200, 'test ok');
-        }
-
-        $order = $this->find_order(isset($data['id']) ? (string) $data['id'] : '');
-        if (! $order) {
-            $this->log('webhook ' . $type . ': no order for invoice ' . ($data['id'] ?? '?'));
-            set_transient($seen_key, 1, DAY_IN_SECONDS);
-            $this->respond(200, 'order not found');
-        }
-
-        self::$from_webhook = true;
-        try {
-            $this->apply_event($order, $type, $data);
-        } finally {
-            self::$from_webhook = false;
+            $message = 'test ok';
+        } else {
+            $order = $this->find_order(isset($data['id']) ? (string) $data['id'] : '');
+            if (! $order) {
+                $this->log('webhook ' . $type . ': no order for invoice ' . (isset($data['id']) ? $this->plain($data['id']) : '?'));
+                $message = 'order not found';
+            } else {
+                self::$from_webhook = true;
+                try {
+                    $this->apply_event($order, $type, $data);
+                } finally {
+                    self::$from_webhook = false;
+                }
+            }
         }
 
         set_transient($seen_key, 1, DAY_IN_SECONDS);
-        $this->respond(200, 'ok');
+        $this->release_lock($lock);
+        $this->respond(200, $message);
+    }
+
+    /** Atomic: the options table has a unique key, so a second INSERT fails. A lock older than 60s is treated as abandoned. */
+    private function acquire_lock($event_id)
+    {
+        global $wpdb;
+        $name = 'ssp_lock_' . md5($event_id);
+
+        $suppress = $wpdb->suppress_errors(true);
+        $inserted = $wpdb->insert($wpdb->options, array('option_name' => $name, 'option_value' => (string) time(), 'autoload' => 'no'));
+        $wpdb->suppress_errors($suppress);
+        if ($inserted) {
+            return $name;
+        }
+
+        $taken_at = (int) $wpdb->get_var($wpdb->prepare("SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $name));
+        if ($taken_at > 0 && time() - $taken_at <= 60) {
+            return null;
+        }
+        $wpdb->update($wpdb->options, array('option_value' => (string) time()), array('option_name' => $name));
+
+        return $name;
+    }
+
+    private function release_lock($name)
+    {
+        global $wpdb;
+        $wpdb->delete($wpdb->options, array('option_name' => $name));
     }
 
     private function find_order($invoice_id)
@@ -336,12 +442,16 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
             if ($order->is_paid()) {
                 return;
             }
-            // Never trust the event alone: the paid amount must match the order.
-            if ((int) ($data['amount'] ?? 0) !== (int) round((float) $order->get_total())) {
-                $order->update_status('on-hold', 'Solosmartpay: nominal pembayaran tidak cocok dengan pesanan. Periksa manual di dashboard Solosmartpay.');
-                $this->log('amount mismatch on order ' . $order->get_id(), 'error');
+            // Never trust the event alone: amount and reference must match the order.
+            $reference_ok = ! isset($data['reference']) || (string) $data['reference'] === substr((string) $order->get_order_number(), 0, 50);
+            if (! $reference_ok || (int) ($data['amount'] ?? 0) !== (int) round((float) $order->get_total())) {
+                $order->update_status('on-hold', 'Solosmartpay: nominal atau referensi pembayaran tidak cocok dengan pesanan. Periksa manual di dashboard Solosmartpay.');
+                $this->log('amount/reference mismatch on order ' . $order->get_id(), 'error');
 
                 return;
+            }
+            if ($order->has_status('cancelled')) {
+                $order->add_order_note('Solosmartpay: pembayaran diterima setelah pesanan dibatalkan. Periksa stok sebelum memproses.');
             }
             $this->mark_paid($order, $data);
 
@@ -365,7 +475,7 @@ class SSP_WC_Gateway extends WC_Payment_Gateway
             return;
         }
         $order->payment_complete(isset($invoice['id']) ? (string) $invoice['id'] : '');
-        $order->add_order_note('Solosmartpay: pembayaran diterima (invoice ' . ($invoice['id'] ?? '?') . ').');
+        $order->add_order_note('Solosmartpay: pembayaran diterima (invoice ' . $this->plain(isset($invoice['id']) ? $invoice['id'] : '?') . ').');
     }
 
     private function respond($status, $message)
