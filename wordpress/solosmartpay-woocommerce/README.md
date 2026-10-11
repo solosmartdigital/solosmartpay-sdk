@@ -50,12 +50,20 @@ Checkout → POST /v1/payments (method "all") → redirect to checkout_url → c
 | `invoice.failed` | A pending or on-hold order is **Failed**. |
 | Order cancelled in WooCommerce | The pending invoice is cancelled at Solosmartpay (best effort). |
 
-Security: the webhook is rejected unless `X-SoloSmartPay-Signature` matches `HMAC_SHA256(secret, timestamp + "." + raw_body)` (constant-time compare, 300 second tolerance); event ids are de-duplicated for 24 hours; the redirect after payment is never trusted as proof of payment.
+## Security
+
+- **Webhook:** rejected unless `X-SoloSmartPay-Signature` matches `HMAC_SHA256(secret, timestamp + "." + raw_body)` (constant-time compare, 300 second window). Event ids are de-duplicated for 24 hours and applied under an atomic lock, so parallel deliveries of one event change the order once. Bodies over 1 MB are refused.
+- **Paid means verified:** an order is only marked paid when the invoice id, amount, and reference all match the order. The redirect after payment is never trusted.
+- **Credentials:** the API token and webhook secret are never printed into the settings page (a blank field keeps the saved value) and never written to the debug log.
+- **HTTPS only:** the Base URL must be HTTPS (plain HTTP only for localhost), requests do not follow redirects, and the customer is only sent to a checkout URL on the same host as the API.
+- **No rounding surprises:** an order total that is not a whole rupiah is refused instead of being rounded.
+- Settings are stored like any WooCommerce gateway option (`wp_options`). Keep admin accounts protected with 2FA and restrict who can reach **WooCommerce → Settings**.
 
 ## Limits
 
 - Currency must be IDR. Order total must be between Rp1 and Rp50.000.000.
 - One gateway with `method: "all"`. The customer chooses QRIS, VA, e-wallet, or retail on the Solosmartpay page.
+- Order totals must be whole rupiah (set WooCommerce → Settings → General → Number of decimals to 0).
 - `redirect_url` is only sent when the shop runs on HTTPS (Solosmartpay requires `https://`).
 
 ## Troubleshooting
