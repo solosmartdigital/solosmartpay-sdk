@@ -6,8 +6,9 @@
 | JavaScript / Node.js | [`node/`](node) | Node 18+ (Bun, Deno), ESM + TypeScript types. Includes `@solosmartpay/node/browser` for the popup checkout (Laravel + Vite example inside). |
 | Python | [`python/`](python) | Python 3.8+ |
 | Go | [`go/`](go) | Go 1.21+ |
+| WooCommerce (WordPress plugin) | [`wordpress/solosmartpay-woocommerce/`](wordpress/solosmartpay-woocommerce) | WordPress 6.2+, WooCommerce 7+, PHP 7.4+, IDR |
 
-No third-party dependencies. Every SDK has the same shape: one client with three resources, typed models, and webhook verification.
+No third-party dependencies. The WooCommerce plugin is a ready-made integration (settings screen, hosted checkout redirect, signed webhook), not an SDK. Every SDK has the same shape: one client with three resources, typed models, and webhook verification.
 
 | | PHP | JavaScript | Python | Go |
 |---|---|---|---|---|

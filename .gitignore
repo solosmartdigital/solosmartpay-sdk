@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# WordPress plugin build output
+wordpress/*/dist/
