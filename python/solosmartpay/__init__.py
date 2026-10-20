@@ -28,7 +28,7 @@ __all__ = [
     "Solosmartpay", "SolosmartpayError", "Invoice", "Qris", "Payment", "PaymentMethod", "WebhookEvent",
     "verify_webhook", "parse_webhook", "VERSION",
 ]
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # transport(method, url, headers, body) -> (status, response_bytes); raise OSError for network failures.
 Transport = Callable[[str, str, Dict[str, str], Optional[bytes]], Tuple[int, bytes]]
@@ -86,6 +86,10 @@ class Invoice:
     #: Set on create: poll it (or call wait_until_ready) until the invoice is ready.
     status_url: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+    #: True for a test payment made with a sandbox token (ssp_test_…): no real money moves.
+    sandbox: bool = False
+    #: Virtual account number (sandbox returns a sample one).
+    va_number: Optional[str] = None
 
     @classmethod
     def _base(cls, data: Dict[str, Any], status_url: Optional[str]) -> Dict[str, Any]:
@@ -100,12 +104,15 @@ class Invoice:
             created_at=_date(data.get("created_at")), checkout_url=_text(data, "checkout_url"),
             embed_url=_text(data, "embed_url"), basic_url=_text(data, "basic_url"),
             redirect_url=_text(data, "redirect_url"), error_code=_text(data, "error_code"),
-            status_url=status_url, raw=data,
+            status_url=status_url, raw=data, sandbox=data.get("sandbox") is True, va_number=_text(data, "va_number"),
         )
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], status_url: Optional[str] = None) -> "Invoice":
         return cls(**cls._base(data, status_url))
+
+    def is_sandbox(self) -> bool:
+        return self.sandbox
 
     def is_pending(self) -> bool:
         return self.status == self.STATUS_PENDING
@@ -205,15 +212,22 @@ class WebhookEvent:
     created_at: Optional[datetime]
     data: Invoice
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+    #: True when the delivery comes from a sandbox payment: never mark a real order paid from it.
+    sandbox: bool = False
 
     @classmethod
     def from_dict(cls, event: Dict[str, Any]) -> "WebhookEvent":
         payload = event.get("data")
+        payload = payload if isinstance(payload, dict) else {}
         return cls(id=str(event["id"]), type=str(event["type"]), created_at=_date(event.get("created_at")),
-                   data=Invoice.from_dict(payload if isinstance(payload, dict) else {}), raw=event)
+                   data=Invoice.from_dict(payload), raw=event,
+                   sandbox=event.get("sandbox") is True or payload.get("sandbox") is True)
 
     def is_paid(self) -> bool:
         return self.type == self.PAYMENT_PAID
+
+    def is_sandbox(self) -> bool:
+        return self.sandbox
 
     def is_test(self) -> bool:
         return self.type == self.TEST
@@ -286,6 +300,36 @@ class PaymentsResource:
         return _wait_until_ready(payment, self.get, timeout, interval)
 
 
+class SandboxResource:
+    """Sandbox helpers: ``ssp.sandbox.simulate / pay / fail / expire``.
+
+    A sandbox token (``ssp_test_…``) creates test payments only (no money, no KYC); these decide how one ends.
+    """
+
+    RESULTS = ("paid", "failed", "expired")
+
+    def __init__(self, client: "Solosmartpay"):
+        self._client = client
+
+    def simulate(self, invoice: Union[Invoice, str], result: str) -> Invoice:
+        """Decide how a pending sandbox payment ends. Raises a 409 error when it already finished."""
+        if not self._client.is_sandbox:
+            raise SolosmartpayError("Simulasi hanya bisa dengan token sandbox (ssp_test_…).")
+        if result not in self.RESULTS:
+            raise ValueError("Hasil simulasi harus salah satu dari: %s." % ", ".join(self.RESULTS))
+        invoice_id = invoice if isinstance(invoice, str) else invoice.id
+        return Invoice.from_dict(self._client._request("POST", "/sandbox/payments/%s/simulate" % urllib.parse.quote(invoice_id, safe=""), {"result": result}))
+
+    def pay(self, invoice: Union[Invoice, str]) -> Invoice:
+        return self.simulate(invoice, "paid")
+
+    def fail(self, invoice: Union[Invoice, str]) -> Invoice:
+        return self.simulate(invoice, "failed")
+
+    def expire(self, invoice: Union[Invoice, str]) -> Invoice:
+        return self.simulate(invoice, "expired")
+
+
 class PaymentMethodsResource:
     """Methods enabled for your store: ``ssp.methods.all / find``."""
 
@@ -320,6 +364,12 @@ class Solosmartpay:
         self.qris = QrisResource(self)
         self.payments = PaymentsResource(self)
         self.methods = PaymentMethodsResource(self)
+        self.sandbox = SandboxResource(self)
+
+    @property
+    def is_sandbox(self) -> bool:
+        """True for a sandbox token (ssp_test_…): its payments are test payments and never move money."""
+        return self.token.startswith("ssp_test_")
 
     # Flat helpers: return raw API dicts.
 

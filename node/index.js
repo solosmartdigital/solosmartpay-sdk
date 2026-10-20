@@ -2,7 +2,7 @@
 // Server-side only: never expose your ssp_ token in browser or mobile code.
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 
 export class SolosmartpayError extends Error {
   constructor(message, status = 0, errors = {}) {
@@ -30,6 +30,12 @@ export class Solosmartpay {
     this.qris = new QrisResource(this);
     this.payments = new PaymentsResource(this);
     this.methods = new PaymentMethodsResource(this);
+    this.sandbox = new SandboxResource(this);
+  }
+
+  /** True for a sandbox token (ssp_test_…): its payments are test payments and never move money. */
+  get isSandbox() {
+    return this.token.startsWith('ssp_test_');
   }
 
   /** Create and queue a QRIS invoice for provisioning. */
@@ -137,8 +143,13 @@ export class Invoice {
     this.redirectUrl = text(data.redirect_url);
     this.errorCode = text(data.error_code);
     this.statusUrl = statusUrl;
+    /** True for a test payment made with a sandbox token (ssp_test_…): no real money moves. */
+    this.sandbox = data.sandbox === true;
+    /** Virtual account number (sandbox returns a sample one). */
+    this.vaNumber = text(data.va_number);
   }
 
+  isSandbox() { return this.sandbox; }
   isPending() { return this.status === Invoice.STATUS.PENDING; }
   isPaid() { return this.status === Invoice.STATUS.PAID; }
   isExpired() { return this.status === Invoice.STATUS.EXPIRED; }
@@ -200,9 +211,12 @@ export class WebhookEvent {
     this.type = String(event.type);
     this.createdAt = date(event.created_at);
     this.data = new Invoice(event.data ?? {});
+    /** True when the delivery comes from a sandbox payment: never mark a real order paid from it. */
+    this.sandbox = event.sandbox === true || event.data?.sandbox === true;
   }
 
   isPaid() { return this.type === WebhookEvent.TYPE.PAYMENT_PAID; }
+  isSandbox() { return this.sandbox; }
   isTest() { return this.type === WebhookEvent.TYPE.TEST; }
 }
 
@@ -257,6 +271,28 @@ export class PaymentsResource {
   async cancel(id) { return new Payment(await this.client.request('DELETE', `/payments/${encodeURIComponent(id)}`)); }
 
   waitUntilReady(paymentOrId, options) { return waitUntilReady(paymentOrId, (id) => this.get(id), options); }
+}
+
+/**
+ * Sandbox helpers: `ssp.sandbox.simulate / pay / fail / expire`.
+ * A sandbox token (ssp_test_…) creates test payments only (no money, no KYC); these decide how one ends.
+ */
+export class SandboxResource {
+  static RESULTS = Object.freeze(['paid', 'failed', 'expired']);
+
+  constructor(client) { this.client = client; }
+
+  /** Decide how a pending sandbox payment ends. Rejects with 409 when it already finished. */
+  async simulate(invoiceOrId, result) {
+    if (!this.client.isSandbox) throw new SolosmartpayError('Simulasi hanya bisa dengan token sandbox (ssp_test_…).');
+    if (!SandboxResource.RESULTS.includes(result)) throw new Error(`Hasil simulasi harus salah satu dari: ${SandboxResource.RESULTS.join(', ')}.`);
+    const id = typeof invoiceOrId === 'string' ? invoiceOrId : invoiceOrId.id;
+    return new Invoice(await this.client.request('POST', `/sandbox/payments/${encodeURIComponent(id)}/simulate`, { result }));
+  }
+
+  pay(invoiceOrId) { return this.simulate(invoiceOrId, 'paid'); }
+  fail(invoiceOrId) { return this.simulate(invoiceOrId, 'failed'); }
+  expire(invoiceOrId) { return this.simulate(invoiceOrId, 'expired'); }
 }
 
 /** Methods enabled for your store: `ssp.methods.all / find`. */

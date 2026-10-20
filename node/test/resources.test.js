@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { Solosmartpay, SolosmartpayError, Invoice, Qris, Payment, PaymentMethod, WebhookEvent, parseWebhook } from '../index.js';
 
+const sandboxSsp = new Solosmartpay({ token: 'ssp_test_abc', baseUrl: 'https://pay.example.com/v1/', maxRetries: 0 });
+
 const ssp = new Solosmartpay({ token: 'ssp_test', baseUrl: 'https://pay.example.com/v1/', maxRetries: 0 });
 const invoice = (over = {}) => ({
   id: 'abc-123', reference: 'ORDER-1', status: 'pending', provisioning_status: 'queued', channel: 'qris', method: 'qris',
@@ -99,4 +101,39 @@ test('legacy flat helpers still return raw API data', async () => {
   mockFetch([[202, { data: invoice(), status_url: 'u' }], [200, { data: invoice({ status: 'cancelled' }) }]]);
   assert.equal((await ssp.createQris({ amount: 50000, idempotencyKey: 'order-3-create' })).status_url, 'u');
   assert.equal((await ssp.cancelQris('abc-123')).status, 'cancelled');
+});
+
+test('ssp_test_ tokens are sandbox tokens and invoices carry the flag', async () => {
+  assert.equal(sandboxSsp.isSandbox, true);
+  assert.equal(ssp.isSandbox, false);
+  mockFetch([[202, { data: invoice({ sandbox: true, va_number: '880812345678901' }), status_url: 'u' }]]);
+  const created = await sandboxSsp.qris.create({ amount: 50000, idempotencyKey: 'sbx-create-1' });
+  assert.equal(created.isSandbox(), true);
+  assert.equal(created.vaNumber, '880812345678901');
+  assert.equal(new Invoice(invoice()).isSandbox(), false);
+});
+
+test('sandbox.pay posts the result to the simulate endpoint', async () => {
+  const calls = mockFetch([[200, { data: invoice({ sandbox: true, status: 'paid', paid_at: '2026-09-27T15:03:10+07:00' }) }]]);
+  const paid = await sandboxSsp.sandbox.pay('abc-123');
+  assert.equal(calls[0].method, 'POST');
+  assert.equal(calls[0].url, 'https://pay.example.com/v1/sandbox/payments/abc-123/simulate');
+  assert.deepEqual(JSON.parse(calls[0].body), { result: 'paid' });
+  assert.ok(paid instanceof Invoice && paid.isPaid() && paid.isSandbox());
+});
+
+test('sandbox.simulate refuses live tokens and unknown results', async () => {
+  await assert.rejects(ssp.sandbox.pay('abc-123'), (e) => e instanceof SolosmartpayError && /token sandbox/.test(e.message));
+  await assert.rejects(sandboxSsp.sandbox.simulate('abc-123', 'maybe'), /paid, failed, expired/);
+});
+
+test('webhook events know when they come from the sandbox', () => {
+  const secret = 'whsec_x';
+  const make = (extra) => {
+    const body = JSON.stringify({ id: 'evt_1', type: 'payment.paid', created_at: '2026-09-27T15:03:12+07:00', ...extra, data: invoice({ status: 'paid', ...(extra.sandbox ? { sandbox: true } : {}) }) });
+    const ts = String(Math.floor(Date.now() / 1000));
+    return parseWebhook(body, 'sha256=' + createHmac('sha256', secret).update(`${ts}.${body}`).digest('hex'), ts, secret);
+  };
+  assert.equal(make({ sandbox: true }).isSandbox(), true);
+  assert.equal(make({}).isSandbox(), false);
 });

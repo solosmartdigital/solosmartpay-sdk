@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const Version = "1.2.0"
+const Version = "1.3.0"
 
 // Error is returned for any non-2xx response or transport failure.
 type Error struct {
@@ -52,7 +52,12 @@ type Client struct {
 	Payments *PaymentsService
 	// Methods lists the payment methods enabled for your store.
 	Methods *MethodsService
+	// Sandbox decides how test payments end. It only works with a sandbox token (ssp_test_…).
+	Sandbox *SandboxService
 }
+
+// IsSandbox reports whether this client holds a sandbox token: its payments are test payments and never move money.
+func (c *Client) IsSandbox() bool { return strings.HasPrefix(c.token, "ssp_test_") }
 
 type Option func(*Client)
 
@@ -74,6 +79,7 @@ func New(token, baseURL string, opts ...Option) (*Client, error) {
 	c.Qris = &QrisService{c}
 	c.Payments = &PaymentsService{c}
 	c.Methods = &MethodsService{c}
+	c.Sandbox = &SandboxService{c}
 	return c, nil
 }
 

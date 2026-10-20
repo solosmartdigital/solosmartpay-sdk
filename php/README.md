@@ -77,6 +77,24 @@ http_response_code(200);
 
 `Webhook::verify()` takes the same arguments and returns the decoded array.
 
+## Sandbox
+
+A token starting with `ssp_test_` is a **sandbox token**: it creates test payments only (no money, no KYC, nothing reaches your balance or reports). Same endpoints, limits and response shape as production.
+
+```php
+$ssp = new Solosmartpay\Client(getenv('SOLOSMARTPAY_SANDBOX_TOKEN'), 'https://your-domain/v1');
+$ssp->isSandbox();                              // true
+
+$qris = $ssp->qris->create(50000, 'order-1-create', 'ORDER-1');
+$qris->isSandbox();                             // true
+
+$ssp->sandbox->pay($qris);                      // payment.paid goes to your webhook, flagged sandbox
+$ssp->sandbox->fail($qris);                     // invoice.failed
+$ssp->sandbox->expire($qris);                   // invoice.expired
+```
+
+`$ssp->sandbox` throws with a live token. Webhooks carry `sandbox: true`: check `$event->isSandbox()` and never mark a real order paid from one.
+
 ## Notes
 
 - Creation returns `202`; use `waitUntilReady()` (or poll `$qris->statusUrl`) before showing the checkout. Reuse an idempotency key only with the same request body.

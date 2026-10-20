@@ -22,6 +22,9 @@ export interface RawInvoice {
   checkout_url: string | null;
   embed_url: string | null;
   basic_url: string | null;
+  /** Present and true for test payments made with a sandbox token. */
+  sandbox?: boolean;
+  va_number?: string | null;
 }
 
 export interface RawQris extends RawInvoice {
@@ -47,6 +50,8 @@ export interface RawWebhookEvent {
   id: string;
   type: 'payment.paid' | 'invoice.expired' | 'invoice.failed' | 'invoice.cancelled' | 'webhook.test';
   created_at: string;
+  /** True for deliveries caused by a sandbox payment. */
+  sandbox?: boolean;
   data: Partial<RawInvoice> & Record<string, unknown>;
 }
 
@@ -90,6 +95,11 @@ export declare class Invoice {
   errorCode: string | null;
   /** Set on create: poll it (or call waitUntilReady) until the invoice is ready. */
   statusUrl: string | null;
+  /** True for a test payment made with a sandbox token (ssp_test_…): no real money moves. */
+  sandbox: boolean;
+  /** Virtual account number (sandbox returns a sample one). */
+  vaNumber: string | null;
+  isSandbox(): boolean;
   isPending(): boolean;
   isPaid(): boolean;
   isExpired(): boolean;
@@ -137,7 +147,10 @@ export declare class WebhookEvent {
   type: string;
   createdAt: Date | null;
   data: Invoice;
+  /** True when the delivery comes from a sandbox payment: never mark a real order paid from it. */
+  sandbox: boolean;
   isPaid(): boolean;
+  isSandbox(): boolean;
   isTest(): boolean;
 }
 
@@ -163,6 +176,15 @@ export declare class PaymentsResource {
   waitUntilReady(paymentOrId: Payment | string, options?: WaitOptions): Promise<Payment>;
 }
 
+export declare class SandboxResource {
+  static readonly RESULTS: readonly ['paid', 'failed', 'expired'];
+  /** Decide how a pending sandbox payment ends. Only for sandbox tokens (ssp_test_…). */
+  simulate(invoiceOrId: Invoice | string, result: 'paid' | 'failed' | 'expired'): Promise<Invoice>;
+  pay(invoiceOrId: Invoice | string): Promise<Invoice>;
+  fail(invoiceOrId: Invoice | string): Promise<Invoice>;
+  expire(invoiceOrId: Invoice | string): Promise<Invoice>;
+}
+
 export declare class PaymentMethodsResource {
   all(group?: 'va' | 'ewallet' | 'retail' | 'paylater'): Promise<PaymentMethod[]>;
   find(code: string): Promise<PaymentMethod | null>;
@@ -173,6 +195,9 @@ export declare class Solosmartpay {
   readonly qris: QrisResource;
   readonly payments: PaymentsResource;
   readonly methods: PaymentMethodsResource;
+  readonly sandbox: SandboxResource;
+  /** True for a sandbox token (ssp_test_…): its payments are test payments and never move money. */
+  readonly isSandbox: boolean;
 
   // Flat helpers: return raw snake_case API data.
   createQris(input: { amount: number; reference?: string; redirectUrl?: string; idempotencyKey: string }): Promise<ProvisioningResponse<RawQris>>;

@@ -69,6 +69,24 @@ def webhook():
 
 `verify_webhook()` takes the same arguments and returns the decoded dict.
 
+## Sandbox
+
+A token starting with `ssp_test_` is a **sandbox token**: it creates test payments only (no money, no KYC, nothing reaches your balance or reports). Same endpoints, limits and response shape as production.
+
+```python
+ssp = Solosmartpay(token=os.environ["SOLOSMARTPAY_SANDBOX_TOKEN"], base_url="https://your-domain/v1")
+ssp.is_sandbox                                  # True
+
+qris = ssp.qris.create(50000, idempotency_key="order-1-create")
+qris.is_sandbox()                               # True
+
+ssp.sandbox.pay(qris)                           # payment.paid goes to your webhook, flagged sandbox
+ssp.sandbox.fail(qris)                          # invoice.failed
+ssp.sandbox.expire(qris)                        # invoice.expired
+```
+
+`ssp.sandbox` raises with a live token. Webhooks carry `sandbox: true`: check `event.is_sandbox()` and never mark a real order paid from one.
+
 ## Notes
 
 - Creation returns `202`; use `wait_until_ready()` (or poll `qris.status_url`) before showing the checkout. Reuse an `idempotency_key` only with the same request body.

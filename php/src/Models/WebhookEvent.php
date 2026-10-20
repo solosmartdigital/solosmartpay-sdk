@@ -20,6 +20,8 @@ final class WebhookEvent
         public readonly ?DateTimeImmutable $createdAt,
         public readonly Invoice $data,
         public readonly array $raw,
+        /** True when the delivery comes from a sandbox payment: never mark a real order paid from it. */
+        public readonly bool $sandbox = false,
     ) {
     }
 
@@ -32,12 +34,18 @@ final class WebhookEvent
             createdAt: isset($event['created_at']) ? new DateTimeImmutable((string) $event['created_at']) : null,
             data: Invoice::fromArray(is_array($event['data'] ?? null) ? $event['data'] : []),
             raw: $event,
+            sandbox: ($event['sandbox'] ?? ($event['data']['sandbox'] ?? false)) === true,
         );
     }
 
     public function isPaid(): bool
     {
         return $this->type === self::PAYMENT_PAID;
+    }
+
+    public function isSandbox(): bool
+    {
+        return $this->sandbox;
     }
 
     public function isTest(): bool

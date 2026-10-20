@@ -38,3 +38,4 @@ Common behaviour:
 - Reads, cancels, and idempotent writes are retried on network errors, 429, and 5xx.
 - Money is integer Rupiah. `status` is `pending`, `paid`, `expired`, or `cancelled`.
 - Webhooks: `X-SoloSmartPay-Signature = "sha256=" + HMAC_SHA256(secret, timestamp + "." + raw_body)`; requests older than 5 minutes are rejected; deduplicate on the event `id`. Events: `payment.paid`, `invoice.expired`, `invoice.failed`, `invoice.cancelled`, `webhook.test`.
+- Sandbox: a token starting with `ssp_test_` creates test payments only (no money, no KYC). `ssp.sandbox.pay / fail / expire` (`Sandbox.Pay` in Go) decide how one ends, and webhooks from it carry `sandbox: true` (`event.isSandbox()`). Never mark a real order paid from a sandbox event.

@@ -58,6 +58,24 @@ http.HandleFunc("/webhook/solosmartpay", func(w http.ResponseWriter, r *http.Req
 })
 ```
 
+## Sandbox
+
+A token starting with `ssp_test_` is a **sandbox token**: it creates test payments only (no money, no KYC, nothing reaches your balance or reports). Same endpoints, limits and response shape as production.
+
+```go
+ssp, _ := solosmartpay.New(os.Getenv("SOLOSMARTPAY_SANDBOX_TOKEN"), "https://your-domain/v1")
+ssp.IsSandbox() // true
+
+qris, _ := ssp.Qris.Create(ctx, solosmartpay.QrisParams{Amount: 50000, IdempotencyKey: "order-1-create"})
+qris.IsSandbox() // true
+
+ssp.Sandbox.Pay(ctx, qris.ID)    // payment.paid goes to your webhook, flagged sandbox
+ssp.Sandbox.Fail(ctx, qris.ID)   // invoice.failed
+ssp.Sandbox.Expire(ctx, qris.ID) // invoice.expired
+```
+
+`ssp.Sandbox` returns an error with a live token. Webhooks carry `sandbox: true`: check `event.IsSandbox()` and never mark a real order paid from one.
+
 ## Notes
 
 - Creation returns `202`; use `WaitUntilReady` (or poll `StatusURL`) before showing the checkout. Reuse an idempotency key only with the same request body.

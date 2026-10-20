@@ -3,6 +3,8 @@ package solosmartpay
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -151,4 +153,43 @@ func waitUntilReady(ctx context.Context, id string, fetch func(context.Context, 
 		case <-time.After(interval):
 		}
 	}
+}
+
+// Results a sandbox payment can be forced into.
+const (
+	ResultPaid    = "paid"
+	ResultFailed  = "failed"
+	ResultExpired = "expired"
+)
+
+// SandboxService decides how sandbox payments end (POST /v1/sandbox/payments/{id}/simulate).
+// A sandbox token (ssp_test_…) creates test payments only: no money, no KYC, nothing reaches your balance.
+type SandboxService struct{ c *Client }
+
+// Simulate ends a pending sandbox payment as ResultPaid, ResultFailed or ResultExpired and returns the finished
+// invoice. It fails with a 409 when the payment already finished, and always fails for a live token.
+func (s *SandboxService) Simulate(ctx context.Context, id, result string) (*Invoice, error) {
+	if !s.c.IsSandbox() {
+		return nil, &Error{Message: "simulasi hanya bisa dengan token sandbox (ssp_test_…)"}
+	}
+	if result != ResultPaid && result != ResultFailed && result != ResultExpired {
+		return nil, &Error{Message: "hasil simulasi harus salah satu dari: paid, failed, expired"}
+	}
+	var out Invoice
+	if err := s.c.do(ctx, http.MethodPost, "/sandbox/payments/"+url.PathEscape(id)+"/simulate", map[string]any{"result": result}, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (s *SandboxService) Pay(ctx context.Context, id string) (*Invoice, error) {
+	return s.Simulate(ctx, id, ResultPaid)
+}
+
+func (s *SandboxService) Fail(ctx context.Context, id string) (*Invoice, error) {
+	return s.Simulate(ctx, id, ResultFailed)
+}
+
+func (s *SandboxService) Expire(ctx context.Context, id string) (*Invoice, error) {
+	return s.Simulate(ctx, id, ResultExpired)
 }

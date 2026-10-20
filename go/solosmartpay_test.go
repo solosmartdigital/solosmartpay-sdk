@@ -221,3 +221,74 @@ func TestVerifyWebhook(t *testing.T) {
 		t.Fatalf("replay must fail: %v", err)
 	}
 }
+
+// sandboxServer is like server, but the client holds a sandbox token.
+func sandboxServer(t *testing.T, queue ...reply) (*Client, *[]recorded) {
+	t.Helper()
+	var calls []recorded
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		calls = append(calls, recorded{r.Method, r.URL.Path, r.Header.Get("Idempotency-Key"), string(b)})
+		rep := reply{500, map[string]any{"message": "queue empty"}}
+		if len(queue) > 0 {
+			rep, queue = queue[0], queue[1:]
+		}
+		w.WriteHeader(rep.status)
+		_ = json.NewEncoder(w).Encode(rep.body)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New("ssp_test_abc", srv.URL+"/v1/", WithMaxRetries(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, &calls
+}
+
+func TestSandboxTokenFlagsInvoicesAndSimulates(t *testing.T) {
+	c, calls := sandboxServer(t,
+		reply{200, map[string]any{"data": invoice(map[string]any{"sandbox": true, "status": "paid", "paid_at": "2026-09-27T15:03:10+07:00", "va_number": "880812345678901"})}},
+	)
+	if !c.IsSandbox() {
+		t.Fatal("ssp_test_ tokens are sandbox tokens")
+	}
+	paid, err := c.Sandbox.Pay(context.Background(), "abc-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := (*calls)[0]
+	if got.method != http.MethodPost || got.path != "/v1/sandbox/payments/abc-123/simulate" || !strings.Contains(got.body, `"result":"paid"`) {
+		t.Fatalf("unexpected simulate call: %+v", got)
+	}
+	if !paid.IsPaid() || !paid.IsSandbox() || paid.VANumber == nil || *paid.VANumber != "880812345678901" {
+		t.Fatalf("unexpected invoice: %+v", paid)
+	}
+}
+
+func TestSandboxRefusesLiveTokensAndUnknownResults(t *testing.T) {
+	live, _ := server(t)
+	if live.IsSandbox() {
+		t.Fatal("ssp_test is a live token")
+	}
+	if _, err := live.Sandbox.Pay(context.Background(), "abc-123"); err == nil || !strings.Contains(err.Error(), "token sandbox") {
+		t.Fatalf("live tokens must not simulate, got %v", err)
+	}
+	sb, _ := sandboxServer(t)
+	if _, err := sb.Sandbox.Simulate(context.Background(), "abc-123", "maybe"); err == nil || !strings.Contains(err.Error(), "paid, failed, expired") {
+		t.Fatalf("unknown results must be rejected, got %v", err)
+	}
+}
+
+func TestWebhookKnowsSandboxEvents(t *testing.T) {
+	secret := "whsec_test"
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	body, _ := json.Marshal(map[string]any{"id": "evt_1", "type": "payment.paid", "sandbox": true, "created_at": "2026-09-27T15:03:12+07:00", "data": invoice(map[string]any{"status": "paid", "sandbox": true})})
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts + "." + string(body)))
+	ev, err := VerifyWebhook(body, "sha256="+hex.EncodeToString(mac.Sum(nil)), ts, secret, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ev.IsSandbox() {
+		t.Fatal("a sandbox delivery must say so")
+	}
+}

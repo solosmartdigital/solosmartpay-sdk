@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solosmartpay"
-version = "1.2.0"
+version = "1.3.0"
 description = "Official Python client for the Solosmartpay payment API (QRIS, bank VA, e-wallet) with webhook verification."
 readme = "README.md"
 requires-python = ">=3.8"

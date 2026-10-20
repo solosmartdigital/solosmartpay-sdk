@@ -5,6 +5,7 @@ namespace Solosmartpay;
 use Solosmartpay\Resources\PaymentMethods;
 use Solosmartpay\Resources\Payments;
 use Solosmartpay\Resources\Qris;
+use Solosmartpay\Resources\Sandbox;
 
 /**
  * Solosmartpay API client.
@@ -17,18 +18,23 @@ use Solosmartpay\Resources\Qris;
  *   $bill = $ssp->payments->create(150000, 'BR', 'order-124-create');     // Models\Payment
  *   $methods = $ssp->methods->all();                                      // Models\PaymentMethod[]
  *
+ * Testing: a token starting with ssp_test_ is a sandbox token. It creates test payments only (no money, no KYC) and
+ * `$ssp->sandbox->pay($qris)` decides how one ends. `$ssp->isSandbox()` tells which kind of token this client holds.
+ *
  * Keep the token on your server: never ship it to browsers or mobile apps.
  * The older array-returning helpers (createQris(), getQris(), ...) still work.
  */
 class Client
 {
-    public const VERSION = '1.2.0';
+    public const VERSION = '1.3.0';
 
     public readonly Qris $qris;
 
     public readonly Payments $payments;
 
     public readonly PaymentMethods $methods;
+
+    public readonly Sandbox $sandbox;
 
     private string $baseUrl;
 
@@ -54,6 +60,13 @@ class Client
         $this->qris = new Qris($this);
         $this->payments = new Payments($this);
         $this->methods = new PaymentMethods($this);
+        $this->sandbox = new Sandbox($this);
+    }
+
+    /** True for a sandbox token (ssp_test_…): its payments are test payments and never move money. */
+    public function isSandbox(): bool
+    {
+        return str_starts_with($this->token, 'ssp_test_');
     }
 
     /** Create and queue a QRIS invoice for provisioning. */

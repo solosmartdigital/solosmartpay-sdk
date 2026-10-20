@@ -107,6 +107,23 @@ $ssp = $client([[202, ['data' => $invoice(), 'status_url' => 'u']]]);
 check('createQris still returns the raw envelope', $ssp->createQris(50000, 'order-3-create')['status_url'] === 'u');
 check('token must start with ssp_', (function () { try { new Client('bad', 'https://x/v1'); } catch (InvalidArgumentException) { return true; } return false; })());
 
+echo "Sandbox\n";
+$sandboxClient = fn (array $queue) => new Client('ssp_test_abc', 'https://pay.example.com/v1/', 5, 1, $respond($queue));
+$sbx = $sandboxClient([
+    [202, ['data' => $invoice(['sandbox' => true, 'provisioning_status' => 'ready', 'qris_string' => 'SANDBOX-QRIS|x']), 'status_url' => 'u']],
+    [200, ['data' => $invoice(['sandbox' => true, 'status' => 'paid', 'paid_at' => '2026-09-27T15:03:10+07:00'])]],
+]);
+check('ssp_test_ tokens are sandbox tokens', $sbx->isSandbox() && ! $client([])->isSandbox());
+$test = $sbx->qris->create(50000, 'sbx-create-1');
+check('sandbox invoices carry the flag', $test->isSandbox() && $test->sandbox === true);
+$paid = $sbx->sandbox->pay($test);
+$last = $calls[array_key_last($calls)];
+check('pay() posts the result to the simulate endpoint', $last['method'] === 'POST' && $last['url'] === 'https://pay.example.com/v1/sandbox/payments/abc-123/simulate' && json_decode($last['body'], true) === ['result' => 'paid']);
+check('simulate returns the finished invoice', $paid->isPaid() && $paid->isSandbox());
+check('live tokens cannot simulate', throws(fn () => $client([])->sandbox->pay('abc-123'), 'token sandbox'));
+check('unknown results are rejected', (function () use ($sandboxClient) { try { $sandboxClient([])->sandbox->simulate('abc-123', 'maybe'); } catch (InvalidArgumentException) { return true; } return false; })());
+check('live invoices are not flagged', ! (Qris::fromArray($invoice()))->isSandbox());
+
 echo "Webhook\n";
 $secret = 'whsec_test';
 $body = json_encode(['id' => 'evt_1', 'type' => 'payment.paid', 'created_at' => '2026-09-27T15:03:12+07:00', 'data' => $invoice(['status' => 'paid', 'paid_at' => '2026-09-27T15:03:10+07:00'])]);
@@ -114,6 +131,10 @@ $ts = (string) time();
 $sig = 'sha256='.hash_hmac('sha256', $ts.'.'.$body, $secret);
 $event = Webhook::parse($body, $sig, $ts, $secret);
 check('parse returns a WebhookEvent with an Invoice', $event instanceof WebhookEvent && $event->isPaid() && $event->data->isPaid() && $event->data->reference === 'ORDER-1' && $event->data->paidAt !== null);
+$sandboxBody = json_encode(['id' => 'evt_2', 'type' => 'payment.paid', 'sandbox' => true, 'created_at' => '2026-09-27T15:03:12+07:00', 'data' => $invoice(['status' => 'paid', 'sandbox' => true])]);
+$sandboxSig = 'sha256='.hash_hmac('sha256', $ts.'.'.$sandboxBody, $secret);
+$sandboxEvent = Webhook::parse($sandboxBody, $sandboxSig, $ts, $secret);
+check('sandbox webhooks are flagged, live ones are not', $sandboxEvent->isSandbox() && $sandboxEvent->data->isSandbox() && ! $event->isSandbox());
 check('verify still returns the array', Webhook::verify($body, $sig, $ts, $secret)['id'] === 'evt_1');
 check('tampered body is rejected', throws(fn () => Webhook::parse($body.' ', $sig, $ts, $secret), 'Signature'));
 $old = (string) (time() - 3600);

@@ -94,6 +94,24 @@ app.post('/webhook/solosmartpay', express.raw({ type: 'application/json' }), (re
 
 Reuse an `idempotencyKey` only with the same request body. A different body returns `409`.
 
+## Sandbox
+
+A token starting with `ssp_test_` is a **sandbox token**: it creates test payments only (no money, no KYC, nothing reaches your balance or reports). Same endpoints, limits and response shape as production.
+
+```js
+const ssp = new Solosmartpay({ token: process.env.SOLOSMARTPAY_SANDBOX_TOKEN, baseUrl: 'https://your-domain/v1' });
+ssp.isSandbox;                                        // true
+
+const qris = await ssp.qris.create({ amount: 50000, idempotencyKey: 'order-1-create' });
+qris.isSandbox();                                     // true
+
+await ssp.sandbox.pay(qris);                          // payment.paid goes to your webhook, flagged sandbox
+await ssp.sandbox.fail(qris);                         // invoice.failed
+await ssp.sandbox.expire(qris);                       // invoice.expired
+```
+
+`ssp.sandbox` rejects with a live token. Webhooks carry `sandbox: true`: check `event.isSandbox()` and never mark a real order paid from one.
+
 ## Laravel
 
 Laravel creates the invoice in PHP; this package opens the popup from your Vite bundle.

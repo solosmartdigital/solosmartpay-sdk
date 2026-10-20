@@ -66,6 +66,11 @@ type Invoice struct {
 	// Bank VA / e-wallet / retail only. Nil for virtual accounts: pay those from the Solosmartpay checkout.
 	PaymentURL *string `json:"payment_url"`
 
+	// Sandbox is true for a test payment made with a sandbox token (ssp_test_…): no real money moves.
+	Sandbox bool `json:"sandbox"`
+	// VANumber is the virtual account number (sandbox returns a sample one).
+	VANumber *string `json:"va_number"`
+
 	// StatusURL is set on create: poll it (or call WaitUntilReady) until the invoice is ready.
 	StatusURL string `json:"-"`
 }
@@ -75,6 +80,9 @@ type (
 	Qris    = Invoice
 	Payment = Invoice
 )
+
+// IsSandbox reports a test payment created with a sandbox token.
+func (i *Invoice) IsSandbox() bool { return i.Sandbox }
 
 func (i *Invoice) IsPending() bool   { return i.Status == StatusPending }
 func (i *Invoice) IsPaid() bool      { return i.Status == StatusPaid }
@@ -122,8 +130,13 @@ type WebhookEvent struct {
 	Type      string          `json:"type"`
 	CreatedAt *time.Time      `json:"created_at"`
 	Data      Invoice         `json:"data"`
-	Raw       json.RawMessage `json:"-"`
+	// Sandbox is true when the delivery comes from a sandbox payment: never mark a real order paid from it.
+	Sandbox bool            `json:"sandbox"`
+	Raw     json.RawMessage `json:"-"`
 }
+
+// IsSandbox reports a delivery caused by a sandbox payment.
+func (e *WebhookEvent) IsSandbox() bool { return e.Sandbox || e.Data.Sandbox }
 
 func (e *WebhookEvent) IsPaid() bool { return e.Type == EventPaymentPaid }
 func (e *WebhookEvent) IsTest() bool { return e.Type == EventTest }

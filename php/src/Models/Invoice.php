@@ -45,6 +45,10 @@ class Invoice implements JsonSerializable
         public readonly ?string $errorCode,
         public readonly ?string $statusUrl,
         public readonly array $raw,
+        /** True for a test payment made with a sandbox token (ssp_test_…): no real money moves. */
+        public readonly bool $sandbox = false,
+        /** Virtual account number (sandbox returns a sample one). */
+        public readonly ?string $vaNumber = null,
     ) {
     }
 
@@ -73,7 +77,14 @@ class Invoice implements JsonSerializable
             errorCode: self::string($data, 'error_code'),
             statusUrl: $statusUrl,
             raw: $data,
+            sandbox: ($data['sandbox'] ?? false) === true,
+            vaNumber: self::string($data, 'va_number'),
         );
+    }
+
+    public function isSandbox(): bool
+    {
+        return $this->sandbox;
     }
 
     public function isPending(): bool

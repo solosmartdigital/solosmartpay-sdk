@@ -26,7 +26,7 @@ READY = {"provisioning_status": "ready", "embed_url": "https://pay.example.com/p
          "checkout_url": "https://pay.example.com/pay/abc-123", "qris_image": "data:image/png;base64,AA"}
 
 
-def client(queue, calls=None, max_retries=1):
+def client(queue, calls=None, max_retries=1, token="ssp_test"):
     queue = list(queue)
 
     def transport(method, url, headers, body):
@@ -35,7 +35,7 @@ def client(queue, calls=None, max_retries=1):
         status, payload = queue.pop(0) if queue else (500, {"message": "queue empty"})
         return status, json.dumps(payload).encode()
 
-    return Solosmartpay("ssp_test", "https://pay.example.com/v1/", max_retries=max_retries, transport=transport)
+    return Solosmartpay(token, "https://pay.example.com/v1/", max_retries=max_retries, transport=transport)
 
 
 class SolosmartpayTest(unittest.TestCase):
@@ -121,6 +121,40 @@ class SolosmartpayTest(unittest.TestCase):
         self.assertEqual(ssp.cancel_qris("abc-123")["status"], "cancelled")
         with self.assertRaises(ValueError):
             Solosmartpay("bad", "https://x/v1")
+
+    def test_sandbox_tokens_flag_invoices_and_simulate(self):
+        calls = []
+        ssp = client([(202, {"data": invoice(sandbox=True, va_number="880812345678901"), "status_url": "u"}),
+                      (200, {"data": invoice(sandbox=True, status="paid", paid_at="2026-09-27T15:03:10+07:00")})],
+                     calls, token="ssp_test_abc")
+        self.assertTrue(ssp.is_sandbox)
+        self.assertFalse(client([]).is_sandbox)
+        created = ssp.qris.create(50000, "sbx-create-1")
+        self.assertTrue(created.is_sandbox() and created.va_number == "880812345678901")
+        self.assertFalse(Invoice.from_dict(invoice()).is_sandbox())
+        paid = ssp.sandbox.pay(created)
+        self.assertEqual((calls[-1]["method"], calls[-1]["url"]), ("POST", "https://pay.example.com/v1/sandbox/payments/abc-123/simulate"))
+        self.assertEqual(json.loads(calls[-1]["body"]), {"result": "paid"})
+        self.assertTrue(paid.is_paid() and paid.is_sandbox())
+
+    def test_simulate_refuses_live_tokens_and_unknown_results(self):
+        with self.assertRaisesRegex(SolosmartpayError, "token sandbox"):
+            client([]).sandbox.pay("abc-123")
+        with self.assertRaisesRegex(ValueError, "paid, failed, expired"):
+            client([], token="ssp_test_abc").sandbox.simulate("abc-123", "maybe")
+
+    def test_webhook_knows_sandbox_events(self):
+        secret = "whsec_test"
+        ts = str(int(time.time()))
+
+        def parse(**extra):
+            body = json.dumps({"id": "evt_1", "type": "payment.paid", "created_at": "2026-09-27T15:03:12+07:00",
+                               "data": invoice(status="paid", **({"sandbox": True} if extra.get("sandbox") else {})), **extra})
+            sig = "sha256=" + hmac.new(secret.encode(), ("%s.%s" % (ts, body)).encode(), hashlib.sha256).hexdigest()
+            return parse_webhook(body, sig, ts, secret)
+
+        self.assertTrue(parse(sandbox=True).is_sandbox())
+        self.assertFalse(parse().is_sandbox())
 
     def test_webhook(self):
         secret = "whsec_test"
