@@ -3,6 +3,7 @@
 | Language | Folder | Requirements |
 |---|---|---|
 | PHP (Laravel-ready) | [`php/`](php) | PHP 8.1+, ext-curl |
+| Laravel package | [`laravel/`](laravel) | Laravel 10 to 13, PHP 8.1+ (facade, webhook route and events, pay button, `solosmartpay:check`) |
 | JavaScript / Node.js | [`node/`](node) | Node 18+ (Bun, Deno), ESM + TypeScript types. Includes `@solosmartpay/node/browser` for the popup checkout (Laravel + Vite example inside). |
 | Python | [`python/`](python) | Python 3.8+ |
 | Go | [`go/`](go) | Go 1.21+ |
