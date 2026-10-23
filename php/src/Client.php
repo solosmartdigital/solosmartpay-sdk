@@ -26,7 +26,7 @@ use Solosmartpay\Resources\Sandbox;
  */
 class Client
 {
-    public const VERSION = '1.3.0';
+    public const VERSION = '1.3.1';
 
     public readonly Qris $qris;
 
@@ -55,12 +55,24 @@ class Client
         if (! str_starts_with($token, 'ssp_')) {
             throw new \InvalidArgumentException('Token Solosmartpay harus diawali "ssp_".');
         }
+        self::assertSecureBaseUrl($baseUrl);
         $this->baseUrl = rtrim($baseUrl, '/');
         $this->transport = $transport;
         $this->qris = new Qris($this);
         $this->payments = new Payments($this);
         $this->methods = new PaymentMethods($this);
         $this->sandbox = new Sandbox($this);
+    }
+
+    /** The token travels in a header: refuse plain http (except a local dev server) so it is never sent unencrypted. */
+    private static function assertSecureBaseUrl(string $baseUrl): void
+    {
+        $parts = parse_url($baseUrl);
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        if ($host === '' || ! ($scheme === 'https' || ($scheme === 'http' && in_array($host, ['localhost', '127.0.0.1', '[::1]'], true)))) {
+            throw new \InvalidArgumentException('baseUrl harus diawali https:// (http:// hanya untuk localhost) agar token tidak terkirim tanpa enkripsi.');
+        }
     }
 
     /** True for a sandbox token (ssp_test_…): its payments are test payments and never move money. */
@@ -164,6 +176,8 @@ class Client
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_CUSTOMREQUEST => $method,
+            // Never follow a redirect: the token header would travel to wherever it points.
+            CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => $this->timeout,
             CURLOPT_CONNECTTIMEOUT => 10,

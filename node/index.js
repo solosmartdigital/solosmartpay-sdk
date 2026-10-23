@@ -2,7 +2,7 @@
 // Server-side only: never expose your ssp_ token in browser or mobile code.
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.3.1';
 
 export class SolosmartpayError extends Error {
   constructor(message, status = 0, errors = {}) {
@@ -15,6 +15,16 @@ export class SolosmartpayError extends Error {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// The token travels in a header: refuse plain http (except a local dev server) so it is never sent unencrypted.
+function assertSecureBaseUrl(baseUrl) {
+  let url;
+  try { url = new URL(baseUrl); } catch { throw new Error('baseUrl tidak valid, contoh https://your-domain/v1'); }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
+    throw new Error('baseUrl harus diawali https:// (http:// hanya untuk localhost) agar token tidak terkirim tanpa enkripsi.');
+  }
+}
+
 export class Solosmartpay {
   /**
    * @param {{ token: string, baseUrl: string, timeoutMs?: number, maxRetries?: number }} options
@@ -22,6 +32,7 @@ export class Solosmartpay {
   constructor({ token, baseUrl, timeoutMs = 20000, maxRetries = 2 }) {
     if (!token || !token.startsWith('ssp_')) throw new Error('Token Solosmartpay harus diawali "ssp_".');
     if (!baseUrl) throw new Error('baseUrl wajib diisi, contoh https://your-domain/v1');
+    assertSecureBaseUrl(baseUrl);
     if (typeof window !== 'undefined') console.warn('[solosmartpay] Jangan pakai SDK ini di browser: token akan bocor.');
     this.token = token;
     this.baseUrl = baseUrl.replace(/\/+$/, '');
@@ -86,6 +97,8 @@ export class Solosmartpay {
         res = await fetch(this.baseUrl + path, {
           method,
           body: payload,
+          // Never follow a redirect: the token header would travel to wherever it points.
+          redirect: 'error',
           signal: AbortSignal.timeout(this.timeoutMs),
           headers: {
             Accept: 'application/json',

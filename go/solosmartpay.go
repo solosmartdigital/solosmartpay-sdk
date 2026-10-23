@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const Version = "1.3.0"
+const Version = "1.3.1"
 
 // Error is returned for any non-2xx response or transport failure.
 type Error struct {
@@ -72,15 +72,38 @@ func New(token, baseURL string, opts ...Option) (*Client, error) {
 	if baseURL == "" {
 		return nil, errors.New("solosmartpay: baseURL wajib diisi")
 	}
+	if err := assertSecureBaseURL(baseURL); err != nil {
+		return nil, err
+	}
 	c := &Client{token: token, baseURL: strings.TrimRight(baseURL, "/"), httpClient: &http.Client{Timeout: 20 * time.Second}, maxRetries: 2}
 	for _, o := range opts {
 		o(c)
+	}
+	// Never follow a redirect: Go would forward the X-API-Token header to wherever it points.
+	// A caller-supplied client keeps its own CheckRedirect if it set one; otherwise it gets a copy that refuses.
+	if c.httpClient.CheckRedirect == nil {
+		hc := *c.httpClient
+		hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		c.httpClient = &hc
 	}
 	c.Qris = &QrisService{c}
 	c.Payments = &PaymentsService{c}
 	c.Methods = &MethodsService{c}
 	c.Sandbox = &SandboxService{c}
 	return c, nil
+}
+
+// assertSecureBaseURL refuses plain http (except a local dev server) so the token is never sent unencrypted.
+func assertSecureBaseURL(baseURL string) error {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Hostname() == "" {
+		return errors.New("solosmartpay: baseURL tidak valid, contoh https://your-domain/v1")
+	}
+	local := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
+	if u.Scheme != "https" && !(u.Scheme == "http" && local) {
+		return errors.New("solosmartpay: baseURL harus diawali https:// (http:// hanya untuk localhost) agar token tidak terkirim tanpa enkripsi")
+	}
+	return nil
 }
 
 // CreateQris creates a QRIS invoice and returns the raw envelope. idempotencyKey is required.

@@ -3,8 +3,10 @@ import hmac
 import json
 import os
 import sys
+import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -172,6 +174,55 @@ class SolosmartpayTest(unittest.TestCase):
         old_sig = "sha256=" + hmac.new(secret.encode(), ("%s.%s" % (old, body)).encode(), hashlib.sha256).hexdigest()
         with self.assertRaisesRegex(SolosmartpayError, "kedaluwarsa"):
             parse_webhook(body, old_sig, old, secret)
+
+
+    def test_base_url_must_be_https_except_localhost(self):
+        for bad in ("http://pay.example.com/v1", "ftp://pay.example.com/v1", "not a url", "http://localhost.evil.com/v1"):
+            with self.assertRaisesRegex(ValueError, "https"):
+                Solosmartpay("ssp_x", bad)
+        Solosmartpay("ssp_x", "http://localhost:8000/v1")
+        Solosmartpay("ssp_x", "http://127.0.0.1:8000/v1")
+
+    def test_redirects_are_not_followed_so_the_token_never_leaves(self):
+        seen = {"other": []}
+
+        class Other(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen["other"].append(self.headers.get("X-API-Token"))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        other = HTTPServer(("127.0.0.1", 0), Other)
+
+        class Redirector(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:%d/steal" % other.server_port)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        origin = HTTPServer(("127.0.0.1", 0), Redirector)
+        for server in (other, origin):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            ssp = Solosmartpay("ssp_secret", "http://127.0.0.1:%d/v1" % origin.server_port, max_retries=0)
+            with self.assertRaisesRegex(SolosmartpayError, "HTTP 302"):
+                ssp.qris.get("abc-123")
+        finally:
+            for server in (origin, other):
+                server.shutdown()
+                server.server_close()
+        self.assertEqual(seen["other"], [])
+
+    def test_non_ascii_digit_timestamp_is_a_clean_error(self):
+        with self.assertRaisesRegex(SolosmartpayError, "Timestamp"):
+            verify_webhook("{}", "sha256=x", "\u00b2\u00b2", "whsec_test")
 
 
 if __name__ == "__main__":

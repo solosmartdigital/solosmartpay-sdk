@@ -292,3 +292,42 @@ func TestWebhookKnowsSandboxEvents(t *testing.T) {
 		t.Fatal("a sandbox delivery must say so")
 	}
 }
+
+func TestBaseURLMustBeHTTPSExceptLocalhost(t *testing.T) {
+	for _, bad := range []string{"http://pay.example.com/v1", "ftp://pay.example.com/v1", "not a url", "http://localhost.evil.com/v1"} {
+		if _, err := New("ssp_x", bad); err == nil || !strings.Contains(err.Error(), "https") {
+			t.Errorf("%q must be refused, got %v", bad, err)
+		}
+	}
+	for _, ok := range []string{"https://pay.example.com/v1", "http://localhost:8000/v1", "http://127.0.0.1:8000/v1"} {
+		if _, err := New("ssp_x", ok); err != nil {
+			t.Errorf("%q must be accepted: %v", ok, err)
+		}
+	}
+}
+
+func TestRedirectsAreNotFollowedSoTheTokenNeverLeaves(t *testing.T) {
+	var leaked []string
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = append(leaked, r.Header.Get("X-API-Token"))
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer other.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/steal", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	for name, opts := range map[string][]Option{"default client": nil, "custom client": {WithHTTPClient(&http.Client{Timeout: time.Second})}} {
+		c, err := New("ssp_secret", origin.URL+"/v1", append(opts, WithMaxRetries(0))...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Qris.Get(context.Background(), "abc-123"); err == nil || !strings.Contains(err.Error(), "302") {
+			t.Fatalf("%s: a redirect must surface as an error, got %v", name, err)
+		}
+	}
+	if len(leaked) != 0 {
+		t.Fatalf("token reached the redirect target: %v", leaked)
+	}
+}

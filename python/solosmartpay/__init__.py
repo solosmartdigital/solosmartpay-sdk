@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -28,7 +29,7 @@ __all__ = [
     "Solosmartpay", "SolosmartpayError", "Invoice", "Qris", "Payment", "PaymentMethod", "WebhookEvent",
     "verify_webhook", "parse_webhook", "VERSION",
 ]
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 # transport(method, url, headers, body) -> (status, response_bytes); raise OSError for network failures.
 Transport = Callable[[str, str, Dict[str, str], Optional[bytes]], Tuple[int, bytes]]
@@ -41,6 +42,24 @@ class SolosmartpayError(Exception):
         super().__init__(message)
         self.status = status
         self.errors = errors or {}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib would forward the token header to wherever it points."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _assert_secure_base_url(base_url: str) -> None:
+    """The token travels in a header: refuse plain http (except a local dev server) so it is never sent unencrypted."""
+    parts = urllib.parse.urlsplit(base_url)
+    local = (parts.hostname or "") in ("localhost", "127.0.0.1", "::1")
+    if not parts.hostname or not (parts.scheme == "https" or (parts.scheme == "http" and local)):
+        raise ValueError("base_url harus diawali https:// (http:// hanya untuk localhost) agar token tidak terkirim tanpa enkripsi.")
 
 
 def _date(value: Any) -> Optional[datetime]:
@@ -357,6 +376,7 @@ class Solosmartpay:
         if not base_url:
             raise ValueError("base_url wajib diisi, contoh https://your-domain/v1")
         self.token = token
+        _assert_secure_base_url(base_url)
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.max_retries = max_retries
@@ -411,7 +431,7 @@ class Solosmartpay:
             return self._transport(method, url, headers, data)
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with _OPENER.open(req, timeout=self.timeout) as resp:
                 return resp.status, resp.read()
         except urllib.error.HTTPError as e:
             return e.code, e.read()
@@ -461,7 +481,7 @@ def verify_webhook(raw_body: Union[bytes, str], signature: str, timestamp: str, 
     if not secret:
         raise SolosmartpayError("Webhook secret kosong.")
     body = raw_body.decode() if isinstance(raw_body, bytes) else raw_body
-    if not str(timestamp).isdigit() or abs(time.time() - int(timestamp)) > tolerance_seconds:
+    if not re.fullmatch(r"[0-9]+", str(timestamp)) or abs(time.time() - int(timestamp)) > tolerance_seconds:
         raise SolosmartpayError("Timestamp webhook tidak valid atau kedaluwarsa (kemungkinan replay).")
     expected = "sha256=" + hmac.new(secret.encode(), ("%s.%s" % (timestamp, body)).encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature or ""):

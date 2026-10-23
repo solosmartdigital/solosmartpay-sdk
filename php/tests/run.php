@@ -140,5 +140,10 @@ check('tampered body is rejected', throws(fn () => Webhook::parse($body.' ', $si
 $old = (string) (time() - 3600);
 check('old timestamp is rejected', throws(fn () => Webhook::parse($body, 'sha256='.hash_hmac('sha256', $old.'.'.$body, $secret), $old, $secret), 'kedaluwarsa'));
 
+echo "Security\n";
+$bad = fn (string $url) => (function () use ($url) { try { new Client('ssp_x', $url); } catch (InvalidArgumentException) { return true; } return false; })();
+check('http base URL is refused', $bad('http://pay.example.com/v1') && $bad('ftp://pay.example.com/v1') && $bad('not a url'));
+check('http is allowed for localhost only', ! $bad('http://localhost:8000/v1') && ! $bad('http://127.0.0.1:8000/v1') && $bad('http://localhost.evil.com/v1'));
+
 echo $failures === 0 ? "\nAll passed\n" : "\n{$failures} failed\n";
 exit($failures === 0 ? 0 : 1);

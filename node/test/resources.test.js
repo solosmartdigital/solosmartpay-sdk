@@ -137,3 +137,18 @@ test('webhook events know when they come from the sandbox', () => {
   assert.equal(make({ sandbox: true }).isSandbox(), true);
   assert.equal(make({}).isSandbox(), false);
 });
+
+test('base URL must be https (http only for localhost) so the token is never sent in clear', () => {
+  assert.throws(() => new Solosmartpay({ token: 'ssp_x', baseUrl: 'http://pay.example.com/v1' }), /https/);
+  assert.throws(() => new Solosmartpay({ token: 'ssp_x', baseUrl: 'ftp://pay.example.com/v1' }), /https/);
+  assert.throws(() => new Solosmartpay({ token: 'ssp_x', baseUrl: 'not a url' }), /baseUrl/);
+  assert.doesNotThrow(() => new Solosmartpay({ token: 'ssp_x', baseUrl: 'http://localhost:8000/v1' }));
+  assert.doesNotThrow(() => new Solosmartpay({ token: 'ssp_x', baseUrl: 'http://127.0.0.1:8000/v1' }));
+});
+
+test('requests never follow redirects', async () => {
+  let init;
+  globalThis.fetch = async (_url, i) => { init = i; return new Response(JSON.stringify({ data: invoice() }), { status: 200 }); };
+  await ssp.qris.get('abc-123');
+  assert.equal(init.redirect, 'error');
+});

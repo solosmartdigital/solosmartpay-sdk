@@ -33,6 +33,7 @@ The flat helpers of 1.0 and 1.1 (`createQris`, `getQris`, `createPayment`, ...) 
 
 Common behaviour:
 - Auth header `X-API-Token: ssp_…`. Keep tokens on your server.
+- The base URL must be `https://` (plain `http://` is accepted for `localhost` only), and the SDKs never follow redirects, so the token cannot be sent unencrypted or forwarded to another host.
 - Creation requires an idempotency key. The same key with the same body returns the same invoice; a different body is a `409`.
 - Creation is asynchronous and returns `202` with `status_url`. `waitUntilReady` polls until the checkout can be shown (`embed_url` filled), and fails if provisioning fails or the timeout passes. QRIS and bank/e-wallet follow the same flow.
 - Reads, cancels, and idempotent writes are retried on network errors, 429, and 5xx.
